@@ -12,14 +12,19 @@ import (
 	"sync"
 	"time"
 
-	rpcstatus "google.golang.org/genproto/googleapis/rpc/status"
-
 	"github.com/golang/protobuf/proto"
-	ptypes "github.com/golang/protobuf/ptypes"
+	"github.com/golang/protobuf/ptypes"
 	pduration "github.com/golang/protobuf/ptypes/duration"
 	ptimestamp "github.com/golang/protobuf/ptypes/timestamp"
 	tasks "google.golang.org/genproto/googleapis/cloud/tasks/v2beta3"
+	rpcstatus "google.golang.org/genproto/googleapis/rpc/status"
 )
+
+var r *regexp.Regexp
+
+func init() {
+	r = regexp.MustCompile("projects/([a-z0-9-]+)/locations/[a-z0-9-]+/queues/[a-zA-Z0-9-]+/tasks/[0-9]+")
+}
 
 // Task holds all internals for a task
 type Task struct {
@@ -107,26 +112,27 @@ func setInitialTaskState(taskState *tasks.Task, queueName string) {
 			appEngineHTTPRequest.AppEngineRouting = &tasks.AppEngineRouting{}
 		}
 
-		r := regexp.MustCompile("projects/([a-z0-9-]+)/locations/[a-z0-9-]+/queues/[a-z0-9-]+/tasks/[0-9]+")
-		project := r.FindStringSubmatch(taskState.GetName())[1]
+		if appEngineHTTPRequest.GetAppEngineRouting().Host == "" {
+			project := r.FindStringSubmatch(taskState.GetName())[1]
 
-		host := project + ".appspot.com"
-		emulatorHost := os.Getenv("APP_ENGINE_EMULATOR_HOST")
-		if emulatorHost != "" {
-			host = emulatorHost
-		}
+			host := project + ".appspot.com"
+			emulatorHost := os.Getenv("APP_ENGINE_EMULATOR_HOST")
+			if emulatorHost != "" {
+				host = emulatorHost
+			}
 
-		if appEngineHTTPRequest.GetAppEngineRouting().GetService() != "" {
-			host = appEngineHTTPRequest.GetAppEngineRouting().GetService() + "." + host
-		}
-		if appEngineHTTPRequest.GetAppEngineRouting().GetVersion() != "" {
-			host = appEngineHTTPRequest.GetAppEngineRouting().GetVersion() + "." + host
-		}
-		if appEngineHTTPRequest.GetAppEngineRouting().GetInstance() != "" {
-			host = appEngineHTTPRequest.GetAppEngineRouting().GetInstance() + "." + host
-		}
+			if appEngineHTTPRequest.GetAppEngineRouting().GetService() != "" {
+				host = appEngineHTTPRequest.GetAppEngineRouting().GetService() + "." + host
+			}
+			if appEngineHTTPRequest.GetAppEngineRouting().GetVersion() != "" {
+				host = appEngineHTTPRequest.GetAppEngineRouting().GetVersion() + "." + host
+			}
+			if appEngineHTTPRequest.GetAppEngineRouting().GetInstance() != "" {
+				host = appEngineHTTPRequest.GetAppEngineRouting().GetInstance() + "." + host
+			}
 
-		appEngineHTTPRequest.GetAppEngineRouting().Host = host
+			appEngineHTTPRequest.GetAppEngineRouting().Host = host
+		}
 
 		if appEngineHTTPRequest.GetRelativeUri() == "" {
 			appEngineHTTPRequest.RelativeUri = "/"
@@ -278,15 +284,14 @@ func dispatch(retry bool, taskState *tasks.Task) int {
 		req.Header.Set(k, v)
 	}
 
-	resp, _ := client.Do(req)
-
-	if resp != nil {
-		// Don't need the response
-		resp.Body.Close()
-		return resp.StatusCode
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return -1
 	}
+	defer resp.Body.Close()
 
-	return -1
+	return resp.StatusCode
 }
 
 func (task *Task) doDispatch(retry bool) {
